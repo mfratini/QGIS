@@ -1319,7 +1319,7 @@ void QgsSymbol::renderFeature( const QgsFeature &feature, QgsRenderContext &cont
   {
     try
     {
-      const QPointF boundsOrigin = _getPoint( context, QgsPoint( geom.boundingBox().xMinimum(), geom.boundingBox().yMinimum() ) );
+      const QPointF boundsOrigin = _getPoint( context, QgsPoint( geom.boundingBox3D().xMinimum(), geom.boundingBox3D().yMinimum(), geom.boundingBox3D().zMinimum() ) );
       if ( std::isfinite( boundsOrigin.x() ) && std::isfinite( boundsOrigin.y() ) )
         context.setTextureOrigin( boundsOrigin );
     }

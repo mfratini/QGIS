@@ -717,9 +717,18 @@ class CORE_EXPORT QgsSymbol
       QPointF pt;
       if ( context.coordinateTransform().isValid() )
       {
-        double x = point.x();
-        double y = point.y();
-        double z = 0.0;
+        double x;
+        double y;
+        double z;
+
+        x = point.x();
+        y = point.y();
+
+        if ( point.is3D() )
+        	z = point.z();
+        else
+        	z = 0;
+
         context.coordinateTransform().transformInPlace( x, y, z );
         pt = QPointF( x, y );
 

@@ -403,7 +403,14 @@ bool QgsMapRendererJob::reprojectToLayerExtent( const QgsMapLayer *ml, const Qgs
         res = false;
       }
       else
-        extent = approxTransform.transformBoundingBox( extent, Qgis::TransformDirection::Reverse );
+      {
+    	  if ( ml->type() != Qgis::LayerType::Vector )
+            extent = approxTransform.transformBoundingBox( extent, Qgis::TransformDirection::Reverse );
+    	  else
+    		extent.setNull();
+
+//          QgsDebugMsgLevel( ml->name() , 1 );
+      }
     }
   }
   catch ( QgsCsException & )
