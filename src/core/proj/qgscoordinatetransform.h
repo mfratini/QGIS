@@ -265,6 +265,8 @@ class CORE_EXPORT QgsCoordinateTransform
      */
     QgsRectangle transformBoundingBox( const QgsRectangle &rectangle, Qgis::TransformDirection direction = Qgis::TransformDirection::Forward, bool handle180Crossover = false ) const SIP_THROW( QgsCsException );
 
+    QgsRectangle transformBoundingBox3D( const QgsBox3D &rectangle, Qgis::TransformDirection direction = Qgis::TransformDirection::Forward, bool handle180Crossover = false ) const SIP_THROW( QgsCsException );
+
     /**
      * Transforms an array of x, y and z double coordinates in place, from the source CRS to the destination CRS.
      * If the direction is ForwardTransform then coordinates are transformed from source to destination,

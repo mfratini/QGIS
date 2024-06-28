@@ -380,6 +380,7 @@ void QgsLayerTreeViewDefaultActions::zoomToLayers( QgsMapCanvas *canvas, const Q
     {
       QgsMapLayer *layer = layers.at( i );
       QgsRectangle layerExtent = layer->extent();
+      QgsBox3D layerExtent3D = layer->extent3D();
 
       QgsVectorLayer *vLayer = qobject_cast<QgsVectorLayer *>( layer );
       if ( vLayer )
@@ -387,18 +388,18 @@ void QgsLayerTreeViewDefaultActions::zoomToLayers( QgsMapCanvas *canvas, const Q
         if ( vLayer->geometryType() == Qgis::GeometryType::Null )
           continue;
 
-        if ( layerExtent.isEmpty() )
+        if ( layerExtent3D.toRectangle().isEmpty() )
         {
           vLayer->updateExtents();
-          layerExtent = vLayer->extent();
+          layerExtent3D = vLayer->extent3D();
         }
       }
 
-      if ( layerExtent.isNull() )
+      if ( layerExtent3D.isNull() )
         continue;
 
       //transform extent
-      layerExtent = canvas->mapSettings().layerExtentToOutputExtent( layer, layerExtent );
+      layerExtent = canvas->mapSettings().layerExtent3DToOutputExtent( layer, layerExtent3D );
 
       extent.combineExtentWith( layerExtent );
     }

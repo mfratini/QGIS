@@ -551,6 +551,33 @@ QgsRectangle QgsMapSettings::layerExtentToOutputExtent( const QgsMapLayer *layer
 }
 
 
+QgsRectangle QgsMapSettings::layerExtent3DToOutputExtent( const QgsMapLayer *layer, QgsBox3D extent3D ) const
+{
+  QgsRectangle extent;
+
+  try
+  {
+    QgsCoordinateTransform ct = layerTransform( layer );
+    if ( ct.isValid() )
+    {
+      QgsDebugMsgLevel( QStringLiteral( "sourceCrs = %1" ).arg( ct.sourceCrs().authid() ), 3 );
+      QgsDebugMsgLevel( QStringLiteral( "destCRS = %1" ).arg( ct.destinationCrs().authid() ), 3 );
+      QgsDebugMsgLevel( QStringLiteral( "extent %1" ).arg( extent3D.toRectangle().toString() ), 3 );
+      ct.setBallparkTransformsAreAppropriate( true );
+      extent = ct.transformBoundingBox3D( extent3D );
+    }
+  }
+  catch ( QgsCsException &cse )
+  {
+    QgsMessageLog::logMessage( QObject::tr( "Transform error caught: %1" ).arg( cse.what() ), QObject::tr( "CRS" ) );
+  }
+
+  QgsDebugMsgLevel( QStringLiteral( "proj extent = %1 " ).arg( extent.toString() ), 3 );
+
+  return extent;
+}
+
+
 QgsRectangle QgsMapSettings::outputExtentToLayerExtent( const QgsMapLayer *layer, QgsRectangle extent ) const
 {
   try

@@ -723,6 +723,206 @@ QgsRectangle QgsCoordinateTransform::transformBoundingBox( const QgsRectangle &r
   return bb_rect;
 }
 
+QgsRectangle QgsCoordinateTransform::transformBoundingBox3D( const QgsBox3D &box, Qgis::TransformDirection direction, const bool handle180Crossover ) const
+{
+  // Calculate the bounding box of a QgsRectangle in the source CRS
+  // when projected to the destination CRS (or the inverse).
+  // This is done by looking at a number of points spread evenly
+  // across the rectangle
+
+  if ( !d->mIsValid || d->mShortCircuit )
+    return box.toRectangle();
+
+  if ( box.toRectangle().isEmpty() )
+  {
+    const QgsVector3D p = transform( (QgsVector3D((box.xMinimum() + box.xMinimum()) / 2, (box.yMaximum() + box.yMaximum()) / 2, (box.zMaximum() + box.zMinimum()) / 2)), direction );
+    const QgsBox3D newbox = QgsBox3D(p.x(), p.y(), p.z(), p.x(), p.y(), p.z(), false);
+    return newbox.toRectangle();
+  }
+
+//  QgsVector3D QgsCoordinateTransform::transform( const QgsVector3D &point, Qgis::TransformDirection direction ) const
+
+  double yMin = box.yMinimum();
+  double yMax = box.yMaximum();
+  if ( d->mGeographicToWebMercator &&
+       ( ( direction == Qgis::TransformDirection::Forward && !d->mIsReversed ) ||
+         ( direction == Qgis::TransformDirection::Reverse && d->mIsReversed ) ) )
+  {
+    // Latitudes close to 90 degree project to infinite northing in theory.
+    // We limit to 90 - 1e-1 which reproject to northing of ~ 44e6 m (about twice
+    // the maximum easting of ~20e6 m).
+    // For reference, GoogleMercator tiles are limited to a northing ~85 deg / ~20e6 m
+    // so limiting to 90 - 1e-1 is reasonable.
+    constexpr double EPS = 1e-1;
+    if ( yMin < -90 + EPS )
+    {
+      if ( yMax < -90 + EPS )
+        throw QgsCsException( QObject::tr( "Could not transform bounding box to target CRS" ) );
+      yMin = -90 + EPS;
+    }
+    if ( yMax > 90 - EPS )
+    {
+      if ( yMin > 90 - EPS )
+        throw QgsCsException( QObject::tr( "Could not transform bounding box to target CRS" ) );
+      yMax = 90 - EPS;
+    }
+  }
+
+  // 64 points (<=2.12) is not enough, see #13665, for EPSG:4326 -> EPSG:3574 (say that it is a hard one),
+  // are decent result from about 500 points and more. This method is called quite often, but
+  // even with 1000 points it takes < 1ms.
+  // TODO: how to effectively and precisely reproject bounding box?
+  const int nPoints = 1000;
+  const double dst = std::sqrt( ( box.width() * ( yMax - yMin ) ) / std::pow( std::sqrt( static_cast< double >( nPoints ) ) - 1, 2.0 ) );
+  const int nXPoints = std::min( static_cast< int >( std::ceil( box.width() / dst ) ) + 1, 1000 );
+  const int nYPoints = std::min( static_cast< int >( std::ceil( ( yMax - yMin ) / dst ) ) + 1, 1000 );
+  const int nZPoints = 100;
+
+  printf("Numero di punti XYZ: %u, %u, %u\n", nXPoints, nYPoints, nZPoints);
+
+  QgsRectangle bb_rect;
+  bb_rect.setNull();
+
+  // We're interfacing with C-style vectors in the
+  // end, so let's do C-style vectors here too.
+  QVector<double> x( nXPoints * nYPoints * nZPoints );
+  QVector<double> y( nXPoints * nYPoints * nZPoints );
+  QVector<double> z( nXPoints * nYPoints * nZPoints );
+
+  QgsDebugMsgLevel( QStringLiteral( "Entering transformBoundingBox..." ), 4 );
+
+  // Populate the vectors
+
+  const double dx = box.width()  / static_cast< double >( nXPoints - 1 );
+  const double dy = ( yMax - yMin ) / static_cast< double >( nYPoints - 1 );
+  const double dz = ( box.zMaximum() - box.zMinimum() ) / static_cast< double >( nZPoints - 1 );
+
+  double pointZ = box.zMinimum();
+
+  for ( int k = 0; k < nZPoints ; k++ )
+  {
+	double pointY = yMin;
+
+	for ( int i = 0; i < nYPoints ; i++ )
+    {
+      // Start at right edge
+	  double pointX = box.xMinimum();
+
+	  for ( int j = 0; j < nXPoints; j++ )
+	  {
+	    x[(k * nXPoints * nYPoints) + ( i * nXPoints ) + j] = pointX;
+	    y[(k * nXPoints * nYPoints) + ( i * nXPoints ) + j] = pointY;
+	    z[(k * nXPoints * nYPoints) + ( i * nXPoints ) + j] = pointZ;
+	    // QgsDebugMsgLevel(QString("BBox coord: (%1, %2)").arg(x[(i*numP) + j]).arg(y[(i*numP) + j]), 2);
+	    pointX += dx;
+	  }
+	  pointY += dy;
+    }
+	pointZ += dz;
+  }
+
+  // Do transformation. Any exception generated must
+  // be handled in above layers.
+  try
+  {
+    transformCoords( nXPoints * nYPoints * nZPoints, x.data(), y.data(), z.data(), direction );
+  }
+  catch ( const QgsCsException & )
+  {
+    // rethrow the exception
+    QgsDebugMsgLevel( QStringLiteral( "rethrowing exception" ), 2 );
+    throw;
+  }
+
+  // check if result bbox is geographic and is crossing 180/-180 line: ie. min X is before the 180° and max X is after the -180°
+  bool doHandle180Crossover = false;
+  if ( nXPoints > 0 )
+  {
+    const double xMin = std::fmod( x[0], 180.0 );
+    const double xMax = std::fmod( x[nXPoints - 1], 180.0 );
+    if ( handle180Crossover
+         && ( ( direction == Qgis::TransformDirection::Forward && d->mDestCRS.isGeographic() ) ||
+              ( direction == Qgis::TransformDirection::Reverse && d->mSourceCRS.isGeographic() ) )
+         && xMin > 0.0 && xMin <= 180.0 && xMax < 0.0 && xMax >= -180.0 )
+    {
+      doHandle180Crossover = true;
+    }
+  }
+
+  double X0 = -1000000000;
+  double Y0 = -1000000000;
+  double X1 = 1000000000;
+  double Y1 = 1000000000;
+
+  // Calculate the bounding box and use that for the extent
+  for ( int i = 0; i < nXPoints * nYPoints * nZPoints; i++ )
+  {
+    if ( !std::isfinite( x[i] ) || !std::isfinite( y[i] ) || !std::isfinite( z[i] ) || (z[i] < -5) || (z[i] > 5) )
+    {
+      continue;
+    }
+
+
+    if (x[i] > X0)
+    {
+  	  X0 = x[i];
+  	  printf("X0 - %13.10f  %13.10f  %13.10f  \n", x[i], y[i], z[i]);
+    }
+
+    if (y[i] > Y0)
+    {
+  	  Y0 = y[i];
+  	  printf("Y0 - %13.10f  %13.10f  %13.10f  \n", x[i], y[i], z[i]);
+    }
+
+    if (x[i] < X1)
+    {
+  	  X1 = x[i];
+  	  printf("X1 - %13.10f  %13.10f  %13.10f  \n", x[i], y[i], z[i]);
+    }
+
+    if (y[i] < Y1)
+    {
+  	  Y1 = y[i];
+  	  printf("Y1 - %13.10f  %13.10f  %13.10f  \n", x[i], y[i], z[i]);
+    }
+
+    if ( doHandle180Crossover )
+    {
+      //if crossing the date line, temporarily add 360 degrees to -ve longitudes
+      bb_rect.combineExtentWith( x[i] >= 0.0 ? x[i] : x[i] + 360.0, y[i] );
+    }
+    else
+    {
+      bb_rect.combineExtentWith( x[i], y[i] );
+    }
+  }
+
+  if ( bb_rect.isNull() )
+  {
+    // something bad happened when reprojecting the filter rect... no finite points were left!
+    throw QgsCsException( QObject::tr( "Could not transform bounding box to target CRS" ) );
+  }
+
+  if ( doHandle180Crossover )
+  {
+    //subtract temporary addition of 360 degrees from longitudes
+    if ( bb_rect.xMinimum() > 180.0 )
+      bb_rect.setXMinimum( bb_rect.xMinimum() - 360.0 );
+    if ( bb_rect.xMaximum() > 180.0 )
+      bb_rect.setXMaximum( bb_rect.xMaximum() - 360.0 );
+  }
+
+  QgsDebugMsgLevel( "Projected extent: " + bb_rect.toString(), 4 );
+
+  if ( bb_rect.isEmpty() )
+  {
+    QgsDebugMsgLevel( "Original extent: " + box.toString(), 4 );
+  }
+
+  return bb_rect;
+}
+
 void QgsCoordinateTransform::transformCoords( int numPoints, double *x, double *y, double *z, Qgis::TransformDirection direction ) const
 {
   if ( !d->mIsValid || d->mShortCircuit )

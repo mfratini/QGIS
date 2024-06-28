@@ -523,6 +523,14 @@ class CORE_EXPORT QgsMapSettings : public QgsTemporalRangeObject
      */
     QgsRectangle layerExtentToOutputExtent( const QgsMapLayer *layer, QgsRectangle extent ) const;
 
+
+    /**
+     * \brief transform bounding box 3D from layer's CRS to output CRS
+     * \see layerToMapCoordinates( const QgsMapLayer *, QgsRectangle ) const if you want to transform a rectangle
+     * \returns a bounding box (aligned rectangle) containing the transformed extent
+     */
+    QgsRectangle layerExtent3DToOutputExtent( const QgsMapLayer *layer, QgsBox3D extent3D ) const;
+
     /**
      * \brief transform bounding box from output CRS to layer's CRS
      * \see mapToLayerCoordinates( const QgsMapLayer *, QgsRectangle ) const if you want to transform a rectangle
