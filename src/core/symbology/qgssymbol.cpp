@@ -2263,7 +2263,7 @@ void QgsSymbol::renderFeature(
         //transform
         x = vertexPoint.x();
         y = vertexPoint.y();
-        z = 0.0;
+        z = vertexPoint.is3D() ? vertexPoint.z() : 0.0;
         if ( ct.isValid() )
         {
           try

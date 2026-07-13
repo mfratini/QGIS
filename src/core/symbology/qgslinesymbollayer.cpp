@@ -2077,7 +2077,7 @@ void QgsTemplatedLineSymbolLayerBase::renderPolylineVertex(
         //transform
         x = vPoint.x();
         y = vPoint.y();
-        z = 0.0;
+        z = vPoint.is3D() ? vPoint.z() : 0.0;
         if ( ct.isValid() )
         {
           ct.transformInPlace( x, y, z );

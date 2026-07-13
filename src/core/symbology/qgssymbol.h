@@ -977,7 +977,7 @@ class CORE_EXPORT QgsSymbol
       {
         double x = point.x();
         double y = point.y();
-        double z = 0.0;
+        double z = point.is3D() ? point.z() : 0.0;
         context.coordinateTransform().transformInPlace( x, y, z );
         pt = QPointF( x, y );
       }
