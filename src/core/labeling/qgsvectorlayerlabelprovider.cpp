@@ -228,7 +228,7 @@ QgsGeometry QgsVectorLayerLabelProvider::getPointObstacleGeometry( QgsFeature &f
     QgsPoint p = fet.geometry().constGet()->vertexAt( QgsVertexId( i, 0, 0 ) );
     double x = p.x();
     double y = p.y();
-    double z = 0; // dummy variable for coordinate transforms
+    double z = p.is3D() ? p.z() : 0.0;
 
     //transform point to pixels
     if ( context.coordinateTransform().isValid() )
@@ -268,7 +268,7 @@ QgsGeometry QgsVectorLayerLabelProvider::getPointObstacleGeometry( QgsFeature &f
     //TODO - remove when labeling is refactored to use screen units
     for ( int i = 0; i < boundLineString->numPoints(); ++i )
     {
-      QgsPointXY point = context.mapToPixel().toMapCoordinates( static_cast<int>( boundLineString->xAt( i ) ), static_cast<int>( boundLineString->yAt( i ) ) );
+      QgsPointXY point = context.mapToPixel().toMapCoordinates( boundLineString->xAt( i ), boundLineString->yAt( i ) );
       boundLineString->setXAt( i, point.x() );
       boundLineString->setYAt( i, point.y() );
     }
@@ -276,7 +276,22 @@ QgsGeometry QgsVectorLayerLabelProvider::getPointObstacleGeometry( QgsFeature &f
     {
       try
       {
-        boundLineString->transform( context.coordinateTransform(), Qgis::TransformDirection::Reverse );
+        if ( context.coordinateTransform().sourceCrs().type() == Qgis::CrsType::Geocentric )
+        {
+          for ( int i = 0; i < boundLineString->numPoints(); ++i )
+          {
+            double px = boundLineString->xAt( i );
+            double py = boundLineString->yAt( i );
+            double pz = z;
+            context.coordinateTransform().transformInPlace( px, py, pz, Qgis::TransformDirection::Reverse );
+            boundLineString->setXAt( i, px );
+            boundLineString->setYAt( i, py );
+          }
+        }
+        else
+        {
+          boundLineString->transform( context.coordinateTransform(), Qgis::TransformDirection::Reverse );
+        }
       }
       catch ( QgsCsException & )
       {

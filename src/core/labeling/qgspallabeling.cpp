@@ -34,6 +34,7 @@
 #include "qgslabelingengine.h"
 #include "qgslogger.h"
 #include "qgsmaptopixelgeometrysimplifier.h"
+#include "qgsmarkersymbol.h"
 #include "qgsmeshlayer.h"
 #include "qgsmessagelog.h"
 #include "qgsmultisurface.h"
@@ -3297,10 +3298,30 @@ std::unique_ptr< QgsTextLabelFeature> QgsPalLayerSettings::generateLabelFeature(
   labelFeature->setOriginalFeatureCrs( context.coordinateTransform().sourceCrs() );
   labelFeature->setMinimumSize( minimumSize );
   labelFeature->setWhitespaceCollisionHandling( placementSettings.whitespaceCollisionHandling() );
-  if ( geom.type() == Qgis::GeometryType::Point && !obstacleGeometry.isNull() )
+  if ( geom.type() == Qgis::GeometryType::Point )
   {
-    //register symbol size
-    labelFeature->setSymbolSize( QSizeF( obstacleGeometry.boundingBox().width(), obstacleGeometry.boundingBox().height() ) );
+    QSizeF symbolSize;
+    bool hasSymbolSize = false;
+
+    if ( !obstacleGeometry.isNull() && !obstacleGeometry.isEmpty() )
+    {
+      symbolSize = QSizeF( obstacleGeometry.boundingBox().width(), obstacleGeometry.boundingBox().height() );
+      hasSymbolSize = true;
+    }
+    else if ( symbol && symbol->type() == Qgis::SymbolType::Marker )
+    {
+      const QgsPointXY ptMap = geom.asPoint();
+      const QPointF ptPx = context.mapToPixel().transform( ptMap.x(), ptMap.y() ).toQPointF();
+      const QRectF markerBounds = static_cast< const QgsMarkerSymbol * >( symbol )->bounds( ptPx, context, feature );
+
+      const QgsPointXY leftTop = context.mapToPixel().toMapCoordinates( markerBounds.left(), markerBounds.top() );
+      const QgsPointXY rightBottom = context.mapToPixel().toMapCoordinates( markerBounds.right(), markerBounds.bottom() );
+      symbolSize = QSizeF( std::fabs( rightBottom.x() - leftTop.x() ), std::fabs( rightBottom.y() - leftTop.y() ) );
+      hasSymbolSize = symbolSize.width() > 0 && symbolSize.height() > 0;
+    }
+
+    if ( hasSymbolSize )
+      labelFeature->setSymbolSize( symbolSize );
   }
 
   if ( outerBounds.left() != 0 || outerBounds.top() != 0 || !qgsDoubleNear( outerBounds.width(), labelSize.width() ) || !qgsDoubleNear( outerBounds.height(), labelSize.height() ) )
@@ -4566,15 +4587,48 @@ QgsGeometry QgsPalLabeling::prepareGeometry( const QgsGeometry &geometry, QgsRen
   //reproject the geometry if necessary
   if ( ct.isValid() && !ct.isShortCircuited() )
   {
-    try
+    bool transformed = false;
+
+    if ( ct.sourceCrs().type() == Qgis::CrsType::Geocentric && geom.type() == Qgis::GeometryType::Point && !geom.isMultipart() )
     {
-      geom.transform( ct );
+      if ( const QgsPoint *point = qgsgeometry_cast< const QgsPoint * >( geom.constGet() ) )
+      {
+        double x = point->x();
+        double y = point->y();
+        double z = point->is3D() ? point->z() : 0.0;
+
+        try
+        {
+          ct.transformInPlace( x, y, z );
+        }
+        catch ( QgsCsException &cse )
+        {
+          Q_UNUSED( cse )
+          QgsDebugMsgLevel( u"Ignoring feature due to transformation exception"_s, 4 );
+          return QgsGeometry();
+        }
+
+        if ( point->is3D() )
+          geom = QgsGeometry( new QgsPoint( x, y, z ) );
+        else
+          geom = QgsGeometry::fromPointXY( QgsPointXY( x, y ) );
+
+        transformed = true;
+      }
     }
-    catch ( QgsCsException &cse )
+
+    if ( !transformed )
     {
-      Q_UNUSED( cse )
-      QgsDebugMsgLevel( u"Ignoring feature due to transformation exception"_s, 4 );
-      return QgsGeometry();
+      try
+      {
+        geom.transform( ct );
+      }
+      catch ( QgsCsException &cse )
+      {
+        Q_UNUSED( cse )
+        QgsDebugMsgLevel( u"Ignoring feature due to transformation exception"_s, 4 );
+        return QgsGeometry();
+      }
     }
     // geometry transforms may result in nan points, remove these
     geom.filterVertices( []( const QgsPoint &point ) -> bool { return std::isfinite( point.x() ) && std::isfinite( point.y() ); } );
