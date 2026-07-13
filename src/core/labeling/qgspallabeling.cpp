@@ -4673,6 +4673,35 @@ QgsGeometry QgsPalLabeling::prepareGeometry( const QgsGeometry &geometry, QgsRen
       }
     }
 
+    if ( !transformed && ct.sourceCrs().type() == Qgis::CrsType::Geocentric )
+    {
+      try
+      {
+        geom.transformVertices( [&ct]( const QgsPoint &point ) -> QgsPoint
+        {
+          double x = point.x();
+          double y = point.y();
+          double z = point.is3D() ? point.z() : 0.0;
+          ct.transformInPlace( x, y, z );
+
+          QgsPoint transformedPoint = point;
+          transformedPoint.setX( x );
+          transformedPoint.setY( y );
+          if ( transformedPoint.is3D() )
+            transformedPoint.setZ( z );
+          return transformedPoint;
+        } );
+      }
+      catch ( QgsCsException &cse )
+      {
+        Q_UNUSED( cse )
+        QgsDebugMsgLevel( u"Ignoring feature due to transformation exception"_s, 4 );
+        return QgsGeometry();
+      }
+
+      transformed = true;
+    }
+
     if ( !transformed )
     {
       try
