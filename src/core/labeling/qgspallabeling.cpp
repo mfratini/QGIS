@@ -35,6 +35,7 @@
 #include "qgslogger.h"
 #include "qgsmaptopixelgeometrysimplifier.h"
 #include "qgsmarkersymbol.h"
+#include "qgsmultipoint.h"
 #include "qgsmeshlayer.h"
 #include "qgsmessagelog.h"
 #include "qgsmultisurface.h"
@@ -3310,14 +3311,25 @@ std::unique_ptr< QgsTextLabelFeature> QgsPalLayerSettings::generateLabelFeature(
     }
     else if ( symbol && symbol->type() == Qgis::SymbolType::Marker )
     {
-      const QgsPointXY ptMap = geom.asPoint();
-      const QPointF ptPx = context.mapToPixel().transform( ptMap.x(), ptMap.y() ).toQPointF();
-      const QRectF markerBounds = static_cast< const QgsMarkerSymbol * >( symbol )->bounds( ptPx, context, feature );
+      QRectF markerBounds;
+      const QgsAbstractGeometry *constGeom = geom.constGet();
+      const int pointCount = constGeom ? constGeom->nCoordinates() : 0;
 
-      const QgsPointXY leftTop = context.mapToPixel().toMapCoordinates( markerBounds.left(), markerBounds.top() );
-      const QgsPointXY rightBottom = context.mapToPixel().toMapCoordinates( markerBounds.right(), markerBounds.bottom() );
-      symbolSize = QSizeF( std::fabs( rightBottom.x() - leftTop.x() ), std::fabs( rightBottom.y() - leftTop.y() ) );
-      hasSymbolSize = symbolSize.width() > 0 && symbolSize.height() > 0;
+      for ( int i = 0; i < pointCount; ++i )
+      {
+        const QgsPoint point = constGeom->vertexAt( QgsVertexId( i, 0, 0 ) );
+        const QPointF ptPx = context.mapToPixel().transform( point.x(), point.y() ).toQPointF();
+        const QRectF bounds = static_cast< const QgsMarkerSymbol * >( symbol )->bounds( ptPx, context, feature );
+        markerBounds = markerBounds.isValid() ? markerBounds.united( bounds ) : bounds;
+      }
+
+      if ( markerBounds.isValid() )
+      {
+        const QgsPointXY leftTop = context.mapToPixel().toMapCoordinates( markerBounds.left(), markerBounds.top() );
+        const QgsPointXY rightBottom = context.mapToPixel().toMapCoordinates( markerBounds.right(), markerBounds.bottom() );
+        symbolSize = QSizeF( std::fabs( rightBottom.x() - leftTop.x() ), std::fabs( rightBottom.y() - leftTop.y() ) );
+        hasSymbolSize = symbolSize.width() > 0 && symbolSize.height() > 0;
+      }
     }
 
     if ( hasSymbolSize )
@@ -4589,29 +4601,73 @@ QgsGeometry QgsPalLabeling::prepareGeometry( const QgsGeometry &geometry, QgsRen
   {
     bool transformed = false;
 
-    if ( ct.sourceCrs().type() == Qgis::CrsType::Geocentric && geom.type() == Qgis::GeometryType::Point && !geom.isMultipart() )
+    if ( ct.sourceCrs().type() == Qgis::CrsType::Geocentric && geom.type() == Qgis::GeometryType::Point )
     {
-      if ( const QgsPoint *point = qgsgeometry_cast< const QgsPoint * >( geom.constGet() ) )
+      if ( !geom.isMultipart() )
       {
-        double x = point->x();
-        double y = point->y();
-        double z = point->is3D() ? point->z() : 0.0;
+        if ( const QgsPoint *point = qgsgeometry_cast< const QgsPoint * >( geom.constGet() ) )
+        {
+          double x = point->x();
+          double y = point->y();
+          double z = point->is3D() ? point->z() : 0.0;
 
-        try
-        {
-          ct.transformInPlace( x, y, z );
+          try
+          {
+            ct.transformInPlace( x, y, z );
+          }
+          catch ( QgsCsException &cse )
+          {
+            Q_UNUSED( cse )
+            QgsDebugMsgLevel( u"Ignoring feature due to transformation exception"_s, 4 );
+            return QgsGeometry();
+          }
+
+          if ( point->is3D() )
+            geom = QgsGeometry( new QgsPoint( x, y, z ) );
+          else
+            geom = QgsGeometry::fromPointXY( QgsPointXY( x, y ) );
+
+          transformed = true;
         }
-        catch ( QgsCsException &cse )
+      }
+      else if ( const QgsGeometryCollection *collection = qgsgeometry_cast< const QgsGeometryCollection * >( geom.constGet() ) )
+      {
+        auto transformedMultiPoint = std::make_unique< QgsMultiPoint >();
+        transformedMultiPoint->reserve( collection->numGeometries() );
+
+        for ( int i = 0; i < collection->numGeometries(); ++i )
         {
-          Q_UNUSED( cse )
-          QgsDebugMsgLevel( u"Ignoring feature due to transformation exception"_s, 4 );
+          const QgsPoint *point = qgsgeometry_cast< const QgsPoint * >( collection->geometryN( i ) );
+          if ( !point )
+            continue;
+
+          double x = point->x();
+          double y = point->y();
+          double z = point->is3D() ? point->z() : 0.0;
+
+          try
+          {
+            ct.transformInPlace( x, y, z );
+          }
+          catch ( QgsCsException &cse )
+          {
+            Q_UNUSED( cse )
+            QgsDebugMsgLevel( u"Ignoring feature due to transformation exception"_s, 4 );
+            return QgsGeometry();
+          }
+
+          if ( point->is3D() )
+            transformedMultiPoint->addGeometry( new QgsPoint( x, y, z ) );
+          else
+            transformedMultiPoint->addGeometry( new QgsPoint( x, y ) );
+        }
+
+        if ( transformedMultiPoint->numGeometries() == 0 )
+        {
           return QgsGeometry();
         }
 
-        if ( point->is3D() )
-          geom = QgsGeometry( new QgsPoint( x, y, z ) );
-        else
-          geom = QgsGeometry::fromPointXY( QgsPointXY( x, y ) );
+        geom = QgsGeometry( transformedMultiPoint.release() );
 
         transformed = true;
       }
