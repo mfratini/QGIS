@@ -107,6 +107,60 @@ email                : sherman at mrcc.com
 
 using namespace Qt::StringLiterals;
 
+namespace
+{
+  QgsRectangle transformGeocentricBox3DToMapExtent( const QgsMapSettings &mapSettings, const QgsVectorLayer *layer, const QgsBox3D &extent3D )
+  {
+    if ( extent3D.isNull() )
+      return QgsRectangle();
+
+    double zMin = extent3D.zMinimum();
+    double zMax = extent3D.zMaximum();
+    if ( !std::isfinite( zMin ) || !std::isfinite( zMax ) )
+    {
+      zMin = 0;
+      zMax = 0;
+    }
+
+    QgsRectangle transformedExtent;
+    transformedExtent.setNull();
+
+    const auto addPoint = [&mapSettings, layer, &transformedExtent]( const double x, const double y, const double z )
+    {
+      const QgsPoint transformedPoint = mapSettings.layerToMapCoordinates( layer, QgsPoint( x, y, z ) );
+      if ( std::isfinite( transformedPoint.x() ) && std::isfinite( transformedPoint.y() ) )
+        transformedExtent.combineExtentWith( transformedPoint.x(), transformedPoint.y() );
+    };
+
+    for ( double x : { extent3D.xMinimum(), extent3D.xMaximum() } )
+    {
+      for ( double y : { extent3D.yMinimum(), extent3D.yMaximum() } )
+      {
+        addPoint( x, y, zMin );
+        if ( !qgsDoubleNear( zMin, zMax ) )
+          addPoint( x, y, zMax );
+      }
+    }
+
+    const double centerZ = ( zMin + zMax ) * 0.5;
+    addPoint( extent3D.center().x(), extent3D.center().y(), centerZ );
+
+    return transformedExtent;
+  }
+
+  QgsRectangle transformVectorLayerExtentToMapExtent( const QgsMapSettings &mapSettings, const QgsVectorLayer *layer, const QgsRectangle &extent2D, const QgsBox3D *extent3D = nullptr )
+  {
+    if ( layer && layer->crs().type() == Qgis::CrsType::Geocentric && extent3D )
+    {
+      const QgsRectangle transformedExtent = transformGeocentricBox3DToMapExtent( mapSettings, layer, *extent3D );
+      if ( !transformedExtent.isNull() )
+        return transformedExtent;
+    }
+
+    return mapSettings.layerExtentToOutputExtent( layer, extent2D );
+  }
+}
+
 const QgsSettingsEntryString *QgsMapCanvas::settingsCustomCoordinateCrs = new QgsSettingsEntryString( u"custom-coordinate-crs"_s, QgsSettingsTree::sTreeMap, QString() );
 const QgsSettingsEntryBool *QgsMapCanvas::settingsMainCanvasPreviewJobs
   = new QgsSettingsEntryBool( u"main-canvas-preview-jobs"_s, QgsSettingsTree::sTreeRendering, true, u"Whether the main map canvas displays preview tiles while rendering"_s );
@@ -1838,15 +1892,13 @@ void QgsMapCanvas::zoomToSelected( QgsMapLayer *layer )
       if ( vlayer->selectedFeatureCount() == 0 )
         return;
 
-      rect = vlayer->boundingBoxOfSelected();
-      if ( rect.isNull() )
+      QString errorMsg;
+      if ( !boundingBoxOfFeatureIds( vlayer->selectedFeatureIds(), vlayer, rect, errorMsg ) )
       {
         cursorOverride.release();
-        emit messageEmitted( tr( "Cannot zoom to selected feature(s)" ), tr( "No extent could be determined." ), Qgis::MessageLevel::Warning );
+        emit messageEmitted( tr( "Cannot zoom to selected feature(s)" ), errorMsg, Qgis::MessageLevel::Warning );
         return;
       }
-
-      rect = mapSettings().layerExtentToOutputExtent( layer, rect );
 
       // zoom in if point cannot be distinguished from others
       // also check that rect is empty, as it might not in case of multi points
@@ -1917,12 +1969,9 @@ void QgsMapCanvas::zoomToSelected( const QList<QgsMapLayer *> &layers )
         if ( layer->selectedFeatureCount() == 0 )
           continue;
 
-        rect = layer->boundingBoxOfSelected();
-
-        if ( rect.isNull() )
+        QString errorMsg;
+        if ( !boundingBoxOfFeatureIds( layer->selectedFeatureIds(), layer, rect, errorMsg ) )
           continue;
-
-        rect = mapSettings().layerExtentToOutputExtent( layer, rect );
 
         if ( layer->geometryType() == Qgis::GeometryType::Point && rect.isEmpty() )
           rect = optimalExtentForPointLayer( layer, rect.center() );
@@ -1977,49 +2026,6 @@ void QgsMapCanvas::zoomToLayers( const QList<QgsMapLayer *> &layers )
   QgsRectangle extent;
   extent.setNull();
 
-  const auto transformGeocentricExtentForVectorLayer = [this]( QgsVectorLayer *layer )
-  {
-    QgsBox3D extent3D = layer->sourceExtent3D();
-    if ( extent3D.isNull() )
-      extent3D = layer->extent3D();
-
-    if ( extent3D.isNull() )
-      return QgsRectangle();
-
-    double zMin = extent3D.zMinimum();
-    double zMax = extent3D.zMaximum();
-    if ( !std::isfinite( zMin ) || !std::isfinite( zMax ) )
-    {
-      zMin = 0;
-      zMax = 0;
-    }
-
-    QgsRectangle transformedExtent;
-    transformedExtent.setNull();
-
-    const auto addPoint = [this, layer, &transformedExtent]( const double x, const double y, const double z )
-    {
-      const QgsPoint transformedPoint = mapSettings().layerToMapCoordinates( layer, QgsPoint( x, y, z ) );
-      if ( std::isfinite( transformedPoint.x() ) && std::isfinite( transformedPoint.y() ) )
-        transformedExtent.combineExtentWith( transformedPoint.x(), transformedPoint.y() );
-    };
-
-    for ( double x : { extent3D.xMinimum(), extent3D.xMaximum() } )
-    {
-      for ( double y : { extent3D.yMinimum(), extent3D.yMaximum() } )
-      {
-        addPoint( x, y, zMin );
-        if ( !qgsDoubleNear( zMin, zMax ) )
-          addPoint( x, y, zMax );
-      }
-    }
-
-    const double centerZ = ( zMin + zMax ) * 0.5;
-    addPoint( extent3D.center().x(), extent3D.center().y(), centerZ );
-
-    return transformedExtent;
-  };
-
   for ( QgsMapLayer *mapLayer : layers )
   {
     QgsRectangle layerExtent = mapLayer->extent();
@@ -2040,22 +2046,9 @@ void QgsMapCanvas::zoomToLayers( const QList<QgsMapLayer *> &layers )
     if ( layerExtent.isNull() )
       continue;
 
-    bool transformed = false;
-    if ( vLayer && mapLayer->crs().type() == Qgis::CrsType::Geocentric )
-    {
-      const QgsRectangle geocentricLayerExtent = transformGeocentricExtentForVectorLayer( vLayer );
-      if ( !geocentricLayerExtent.isNull() )
-      {
-        layerExtent = geocentricLayerExtent;
-        transformed = true;
-      }
-    }
-
-    if ( !transformed )
-    {
-      // transform extent
-      layerExtent = mapSettings().layerExtentToOutputExtent( mapLayer, layerExtent );
-    }
+    const QgsBox3D extent3D = vLayer ? ( vLayer->sourceExtent3D().isNull() ? vLayer->extent3D() : vLayer->sourceExtent3D() ) : QgsBox3D();
+    layerExtent = vLayer ? transformVectorLayerExtentToMapExtent( mapSettings(), vLayer, layerExtent, &extent3D )
+                         : mapSettings().layerExtentToOutputExtent( mapLayer, layerExtent );
 
     if ( !QgsMapSettingsUtils::isValidExtent( layerExtent ) )
       continue;
@@ -2170,6 +2163,7 @@ bool QgsMapCanvas::boundingBoxOfFeatureIds( const QgsFeatureIds &ids, QgsVectorL
   QgsFeature fet;
   int featureCount = 0;
   errorMsg.clear();
+  const bool isGeocentric = layer && layer->crs().type() == Qgis::CrsType::Geocentric;
 
   while ( it.nextFeature( fet ) )
   {
@@ -2186,7 +2180,15 @@ bool QgsMapCanvas::boundingBoxOfFeatureIds( const QgsFeatureIds &ids, QgsVectorL
     {
       return false;
     }
-    QgsRectangle r = mapSettings().layerExtentToOutputExtent( layer, geom.boundingBox() );
+
+    QgsBox3D geomExtent3D;
+    if ( isGeocentric )
+      geomExtent3D = geom.boundingBox3D();
+
+    const QgsRectangle r = isGeocentric
+                           ? transformVectorLayerExtentToMapExtent( mapSettings(), layer, geom.boundingBox(), &geomExtent3D )
+                           : mapSettings().layerExtentToOutputExtent( layer, geom.boundingBox() );
+
     bbox.combineExtentWith( r );
     featureCount++;
   }
@@ -2219,7 +2221,12 @@ void QgsMapCanvas::panToSelected( QgsMapLayer *layer )
       if ( vLayer->selectedFeatureCount() == 0 )
         return;
 
-      rect = vLayer->boundingBoxOfSelected();
+      QString errorMsg;
+      if ( !boundingBoxOfFeatureIds( vLayer->selectedFeatureIds(), vLayer, rect, errorMsg ) )
+      {
+        emit messageEmitted( tr( "Cannot pan to selected feature(s)" ), errorMsg, Qgis::MessageLevel::Warning );
+        return;
+      }
       break;
     }
     case Qgis::LayerType::VectorTile:
@@ -2255,7 +2262,6 @@ void QgsMapCanvas::panToSelected( QgsMapLayer *layer )
     return;
   }
 
-  rect = mapSettings().layerExtentToOutputExtent( layer, rect );
   setCenter( rect.center() );
   refresh();
 }
@@ -2279,12 +2285,9 @@ void QgsMapCanvas::panToSelected( const QList<QgsMapLayer *> &layers )
         if ( layer->selectedFeatureCount() == 0 )
           continue;
 
-        rect = layer->boundingBoxOfSelected();
-
-        if ( rect.isNull() )
+        QString errorMsg;
+        if ( !boundingBoxOfFeatureIds( layer->selectedFeatureIds(), layer, rect, errorMsg ) )
           continue;
-
-        rect = mapSettings().layerExtentToOutputExtent( layer, rect );
 
         if ( layer->geometryType() == Qgis::GeometryType::Point && rect.isEmpty() )
           rect = optimalExtentForPointLayer( layer, rect.center() );
