@@ -376,7 +376,13 @@ QgsFeatureIds QgsMapToolSelectUtils::getMatchingFeatures( QgsMapCanvas *canvas, 
   // and then click somewhere off the globe, an exception will be thrown.
   QgsGeometry selectGeomTrans;
   QgsCoordinateTransform ct( canvas->mapSettings().destinationCrs(), vlayer->crs(), QgsProject::instance() );
-  if ( !transformSelectGeometry( selectGeometry, selectGeomTrans, ct ) )
+  ct.setBallparkTransformsAreAppropriate( true );
+  const bool geocentricSelection = vlayer->crs().type() == Qgis::CrsType::Geocentric || canvas->mapSettings().destinationCrs().type() == Qgis::CrsType::Geocentric;
+  if ( geocentricSelection )
+  {
+    selectGeomTrans = selectGeometry;
+  }
+  else if ( !transformSelectGeometry( selectGeometry, selectGeomTrans, ct ) )
   {
     if ( QgsMessageBar *messageBar = canvas->messageBar() )
     {
@@ -420,8 +426,11 @@ QgsFeatureIds QgsMapToolSelectUtils::getMatchingFeatures( QgsMapCanvas *canvas, 
     return newSelectedFeatures;
 
   QgsFeatureRequest request;
-  request.setFilterRect( selectGeomTrans.boundingBox() );
-  request.setFlags( Qgis::FeatureRequestFlag::ExactIntersect );
+  if ( !geocentricSelection )
+  {
+    request.setFilterRect( selectGeomTrans.boundingBox() );
+    request.setFlags( Qgis::FeatureRequestFlag::ExactIntersect );
+  }
   if ( r )
     request.setSubsetOfAttributes( r->usedAttributes( context ), vlayer->fields() );
   else
@@ -453,6 +462,18 @@ QgsFeatureIds QgsMapToolSelectUtils::getMatchingFeatures( QgsMapCanvas *canvas, 
       continue;
 
     QgsGeometry g = f.geometry();
+    if ( geocentricSelection )
+    {
+      try
+      {
+        g.transform( ct, Qgis::TransformDirection::Reverse, true );
+      }
+      catch ( QgsCsException & )
+      {
+        continue;
+      }
+    }
+
     QString errorMessage;
     if ( doContains )
     {
@@ -566,6 +587,8 @@ void QgsMapToolSelectUtils::QgsMapToolSelectMenuActions::startFeatureSearch()
   mJobData->context = QgsRenderContext::fromMapSettings( mCanvas->mapSettings() );
   mJobData->filterString = canvasFilter;
   mJobData->ct = QgsCoordinateTransform( mCanvas->mapSettings().destinationCrs(), mVectorLayer->crs(), mJobData->context.transformContext() );
+  mJobData->ct.setBallparkTransformsAreAppropriate( true );
+  mJobData->geocentricSelection = mVectorLayer->crs().type() == Qgis::CrsType::Geocentric || mCanvas->mapSettings().destinationCrs().type() == Qgis::CrsType::Geocentric;
   mJobData->featureRenderer.reset( mVectorLayer->renderer()->clone() );
 
   mJobData->context.setExpressionContext( mCanvas->createExpressionContext() );
@@ -586,7 +609,7 @@ QgsFeatureIds QgsMapToolSelectUtils::QgsMapToolSelectMenuActions::search( std::s
 
   QgsGeometry selectGeomTrans = data->selectGeometry;
 
-  if ( !transformSelectGeometry( data->selectGeometry, selectGeomTrans, data->ct ) )
+  if ( !data->geocentricSelection && !transformSelectGeometry( data->selectGeometry, selectGeomTrans, data->ct ) )
   {
     QgsMessageLog::logMessage( QObject::tr( "Selection extends beyond layer's coordinate system" ), QString(), Qgis::MessageLevel::Warning, true );
     return newSelectedFeatures;
@@ -610,8 +633,11 @@ QgsFeatureIds QgsMapToolSelectUtils::QgsMapToolSelectMenuActions::search( std::s
   }
 
   QgsFeatureRequest request;
-  request.setFilterRect( selectGeomTrans.boundingBox() );
-  request.setFlags( Qgis::FeatureRequestFlag::ExactIntersect );
+  if ( !data->geocentricSelection )
+  {
+    request.setFilterRect( selectGeomTrans.boundingBox() );
+    request.setFlags( Qgis::FeatureRequestFlag::ExactIntersect );
+  }
 
   if ( !data->filterString.isEmpty() )
     request.setFilterExpression( data->filterString );
@@ -630,7 +656,6 @@ QgsFeatureIds QgsMapToolSelectUtils::QgsMapToolSelectMenuActions::search( std::s
   QgsFeatureIterator fit = data->source->getFeatures( request );
 
   QgsFeature f;
-
   while ( fit.nextFeature( f ) && !data->isCanceled )
   {
     data->context.expressionContext().setFeature( f );
@@ -639,6 +664,18 @@ QgsFeatureIds QgsMapToolSelectUtils::QgsMapToolSelectMenuActions::search( std::s
       continue;
 
     QgsGeometry g = f.geometry();
+    if ( data->geocentricSelection )
+    {
+      try
+      {
+        g.transform( data->ct, Qgis::TransformDirection::Reverse, true );
+      }
+      catch ( QgsCsException & )
+      {
+        continue;
+      }
+    }
+
     QString errorMessage;
 
     // if we get an error from the intersects check then it indicates that the geometry is invalid and GEOS choked on it.
@@ -661,6 +698,7 @@ QgsFeatureIds QgsMapToolSelectUtils::QgsMapToolSelectMenuActions::search( std::s
 
   if ( r )
     r->stopRender( data->context );
+
   return filterIds( newSelectedFeatures, data->existingSelection, data->selectBehavior );
 }
 

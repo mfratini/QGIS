@@ -178,6 +178,7 @@ namespace QgsMapToolSelectUtils
       struct DataForSearchingJob
       {
           bool isCanceled;
+          bool geocentricSelection = false;
           std::unique_ptr<QgsVectorLayerFeatureSource> source;
           QgsGeometry selectGeometry;
           QgsCoordinateTransform ct;
