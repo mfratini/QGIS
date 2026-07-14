@@ -2419,7 +2419,11 @@ void QgsIdentifyResultsDialog::highlightFeature( QTreeWidgetItem *item )
     return;
 
   QgsHighlight *highlight = nullptr;
-  if ( vlayer )
+  const bool geocentricHighlight = layer->crs().type() == Qgis::CrsType::Geocentric || mCanvas->mapSettings().destinationCrs().type() == Qgis::CrsType::Geocentric;
+  const Qgis::GeometryType geomType = featItem->feature().geometry().type();
+  const bool useGeometryBasedHighlight = vlayer && geocentricHighlight && ( geomType == Qgis::GeometryType::Line || geomType == Qgis::GeometryType::Polygon );
+
+  if ( vlayer && !useGeometryBasedHighlight )
   {
     highlight = new QgsHighlight( mCanvas, featItem->feature(), vlayer );
   }

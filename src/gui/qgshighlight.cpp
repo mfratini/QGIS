@@ -97,7 +97,7 @@ void QgsHighlight::updateTransformedGeometry()
     mGeometry = mOriginalGeometry;
     try
     {
-      mGeometry.transform( ct );
+      mGeometry.transform( ct, Qgis::TransformDirection::Forward, true );
     }
     catch ( QgsCsException & )
     {
