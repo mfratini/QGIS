@@ -465,6 +465,7 @@ bool QgsMapToolIdentify::identifyVectorTileLayer( QList<QgsMapToolIdentify::Iden
   QMap<QString, QString> commonDerivedAttributes;
 
   QgsGeometry selectionGeom = geometry;
+  const bool geocentricIdentify = layer->crs().type() == Qgis::CrsType::Geocentric || mCanvas->mapSettings().destinationCrs().type() == Qgis::CrsType::Geocentric;
   bool isPointOrRectangle;
   QgsPointXY point;
   bool isSingleClick = selectionGeom.type() == Qgis::GeometryType::Point;
@@ -474,6 +475,11 @@ bool QgsMapToolIdentify::identifyVectorTileLayer( QList<QgsMapToolIdentify::Iden
     point = selectionGeom.asPoint();
 
     commonDerivedAttributes = derivedAttributesForPoint( QgsPoint( point ) );
+    if ( geocentricIdentify )
+    {
+      const double sr = mPropertiesOverrides.searchRadiusMapUnits < 0 ? searchRadiusMU( mCanvas ) : mPropertiesOverrides.searchRadiusMapUnits;
+      selectionGeom = QgsGeometry::fromRect( QgsRectangle( point.x() - sr, point.y() - sr, point.x() + sr, point.y() + sr ) );
+    }
   }
   else
   {
@@ -491,7 +497,13 @@ bool QgsMapToolIdentify::identifyVectorTileLayer( QList<QgsMapToolIdentify::Iden
   try
   {
     QgsRectangle r;
-    if ( isSingleClick )
+    if ( geocentricIdentify )
+    {
+      r = layer->extent();
+      selectionGeomPrepared.reset( QgsGeometry::createGeometryEngine( selectionGeom.constGet() ) );
+      selectionGeomPrepared->prepareGeometry();
+    }
+    else if ( isSingleClick )
     {
       double sr = mPropertiesOverrides.searchRadiusMapUnits < 0 ? searchRadiusMU( mCanvas ) : mPropertiesOverrides.searchRadiusMapUnits;
       r = toLayerCoordinates( layer, QgsRectangle( point.x() - sr, point.y() - sr, point.x() + sr, point.y() + sr ) );
@@ -546,7 +558,22 @@ bool QgsMapToolIdentify::identifyVectorTileLayer( QList<QgsMapToolIdentify::Iden
         const QVector<QgsFeature> &layerFeatures = features[layerName];
         for ( const QgsFeature &f : layerFeatures )
         {
-          if ( f.geometry().intersects( r ) && ( !selectionGeomPrepared || selectionGeomPrepared->intersects( f.geometry().constGet() ) ) )
+          QgsGeometry featureGeometry = f.geometry();
+          if ( geocentricIdentify )
+          {
+            try
+            {
+              QgsCoordinateTransform ct( layer->crs(), mCanvas->mapSettings().destinationCrs(), mCanvas->mapSettings().transformContext() );
+              ct.setBallparkTransformsAreAppropriate( true );
+              featureGeometry.transform( ct, Qgis::TransformDirection::Forward, true );
+            }
+            catch ( QgsCsException & )
+            {
+              continue;
+            }
+          }
+
+          if ( ( geocentricIdentify || featureGeometry.intersects( r ) ) && ( !selectionGeomPrepared || selectionGeomPrepared->intersects( featureGeometry.constGet() ) ) )
           {
             QMap<QString, QString> derivedAttributes = commonDerivedAttributes;
             derivedAttributes.insert( tr( "Feature ID" ), FID_TO_STRING( f.id() ) );
@@ -646,6 +673,7 @@ bool QgsMapToolIdentify::identifyVectorLayer( QList<QgsMapToolIdentify::Identify
   QMap<QString, QString> commonDerivedAttributes;
 
   QgsGeometry selectionGeom = geometry;
+  const bool geocentricIdentify = layer->crs().type() == Qgis::CrsType::Geocentric || mCanvas->mapSettings().destinationCrs().type() == Qgis::CrsType::Geocentric;
   bool isPointOrRectangle;
   QgsPoint point;
   bool isSingleClick = selectionGeom.type() == Qgis::GeometryType::Point;
@@ -655,6 +683,11 @@ bool QgsMapToolIdentify::identifyVectorLayer( QList<QgsMapToolIdentify::Identify
     point = *qgsgeometry_cast<const QgsPoint *>( selectionGeom.constGet() );
 
     commonDerivedAttributes = derivedAttributesForPoint( point );
+    if ( geocentricIdentify )
+    {
+      const double sr = mPropertiesOverrides.searchRadiusMapUnits < 0 ? searchRadiusMU( mCanvas ) : mPropertiesOverrides.searchRadiusMapUnits;
+      selectionGeom = QgsGeometry::fromRect( QgsRectangle( point.x() - sr, point.y() - sr, point.x() + sr, point.y() + sr ) );
+    }
   }
   else
   {
@@ -671,7 +704,12 @@ bool QgsMapToolIdentify::identifyVectorLayer( QList<QgsMapToolIdentify::Identify
   try
   {
     QgsRectangle r;
-    if ( isSingleClick )
+    if ( geocentricIdentify )
+    {
+      selectionGeomPrepared.reset( QgsGeometry::createGeometryEngine( selectionGeom.constGet() ) );
+      selectionGeomPrepared->prepareGeometry();
+    }
+    else if ( isSingleClick )
     {
       double sr = mPropertiesOverrides.searchRadiusMapUnits < 0 ? searchRadiusMU( mCanvas ) : mPropertiesOverrides.searchRadiusMapUnits;
       r = toLayerCoordinates( layer, QgsRectangle( point.x() - sr, point.y() - sr, point.x() + sr, point.y() + sr ) );
@@ -692,8 +730,9 @@ bool QgsMapToolIdentify::identifyVectorLayer( QList<QgsMapToolIdentify::Identify
     }
 
     QgsFeatureRequest featureRequest;
-    featureRequest.setFilterRect( r );
-    featureRequest.setFlags( Qgis::FeatureRequestFlag::ExactIntersect | ( fetchFeatureSymbols ? Qgis::FeatureRequestFlag::EmbeddedSymbols : Qgis::FeatureRequestFlags() ) );
+    if ( !geocentricIdentify )
+      featureRequest.setFilterRect( r );
+    featureRequest.setFlags( ( geocentricIdentify ? Qgis::FeatureRequestFlags() : Qgis::FeatureRequestFlag::ExactIntersect ) | ( fetchFeatureSymbols ? Qgis::FeatureRequestFlag::EmbeddedSymbols : Qgis::FeatureRequestFlags() ) );
     if ( !temporalFilter.isEmpty() )
       featureRequest.setFilterExpression( temporalFilter );
 
@@ -701,7 +740,22 @@ bool QgsMapToolIdentify::identifyVectorLayer( QList<QgsMapToolIdentify::Identify
     QgsFeature f;
     while ( fit.nextFeature( f ) )
     {
-      if ( !selectionGeomPrepared || selectionGeomPrepared->intersects( f.geometry().constGet() ) )
+      QgsGeometry featureGeometry = f.geometry();
+      if ( geocentricIdentify )
+      {
+        QgsCoordinateTransform ct( layer->crs(), mCanvas->mapSettings().destinationCrs(), mCanvas->mapSettings().transformContext() );
+        ct.setBallparkTransformsAreAppropriate( true );
+        try
+        {
+          featureGeometry.transform( ct, Qgis::TransformDirection::Forward, true );
+        }
+        catch ( QgsCsException & )
+        {
+          continue;
+        }
+      }
+
+      if ( !selectionGeomPrepared || selectionGeomPrepared->intersects( featureGeometry.constGet() ) )
         featureList << QgsFeature( f );
     }
   }
