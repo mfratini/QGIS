@@ -30,10 +30,73 @@
 #include "qgssettingsregistrycore.h"
 #include "qgsvectorlayer.h"
 
+#include <cmath>
 #include <QRegularExpression>
 #include <QString>
 
 using namespace Qt::StringLiterals;
+
+namespace
+{
+  QgsRectangle transformGeocentricExtent( const QgsMapLayer *layer, const QgsCoordinateReferenceSystem &destinationCrs, const QgsCoordinateTransformContext &transformContext )
+  {
+    QgsRectangle transformedExtent;
+    transformedExtent.setNull();
+
+    QgsCoordinateTransform ct( layer->crs(), destinationCrs, transformContext );
+    ct.setBallparkTransformsAreAppropriate( true );
+
+    const QgsRectangle extent2D = layer->extent();
+    const QgsBox3D extent3D = layer->extent3D();
+
+    double zMin = 0;
+    double zMax = 0;
+    if ( !extent3D.isNull() )
+    {
+      zMin = extent3D.zMinimum();
+      zMax = extent3D.zMaximum();
+      if ( !std::isfinite( zMin ) || !std::isfinite( zMax ) )
+      {
+        zMin = 0;
+        zMax = 0;
+      }
+    }
+
+    const auto addPoint = [&ct, &transformedExtent]( double x, double y, double z )
+    {
+      try
+      {
+        ct.transformInPlace( x, y, z, Qgis::TransformDirection::Forward );
+      }
+      catch ( QgsCsException & )
+      {
+        return;
+      }
+
+      if ( std::isfinite( x ) && std::isfinite( y ) )
+        transformedExtent.combineExtentWith( x, y );
+    };
+
+    const double xMin = extent3D.isNull() ? extent2D.xMinimum() : extent3D.xMinimum();
+    const double xMax = extent3D.isNull() ? extent2D.xMaximum() : extent3D.xMaximum();
+    const double yMin = extent3D.isNull() ? extent2D.yMinimum() : extent3D.yMinimum();
+    const double yMax = extent3D.isNull() ? extent2D.yMaximum() : extent3D.yMaximum();
+
+    for ( double x : { xMin, xMax } )
+    {
+      for ( double y : { yMin, yMax } )
+      {
+        addPoint( x, y, zMin );
+        if ( !qgsDoubleNear( zMin, zMax ) )
+          addPoint( x, y, zMax );
+      }
+    }
+
+    addPoint( ( xMin + xMax ) * 0.5, ( yMin + yMax ) * 0.5, ( zMin + zMax ) * 0.5 );
+
+    return transformedExtent;
+  }
+}
 
 QgsRectangle QgsMapLayerUtils::combinedExtent( const QList<QgsMapLayer *> &layers, const QgsCoordinateReferenceSystem &crs, const QgsCoordinateTransformContext &transformContext )
 {
@@ -54,6 +117,20 @@ QgsRectangle QgsMapLayerUtils::combinedExtent( const QList<QgsMapLayer *> &layer
 
     // Layer extents are stored in the coordinate system (CS) of the
     // layer. The extent must be projected to the canvas CS
+    if ( layer->crs().type() == Qgis::CrsType::Geocentric || crs.type() == Qgis::CrsType::Geocentric )
+    {
+      const QgsRectangle extent = transformGeocentricExtent( layer, crs, transformContext );
+      if ( extent.isNull() )
+      {
+        QgsDebugError( u"Could not reproject geocentric layer extent"_s );
+        continue;
+      }
+
+      QgsDebugMsgLevel( "Output extent: " + extent.toString(), 5 );
+      fullExtent.combineExtentWith( extent );
+      continue;
+    }
+
     QgsCoordinateTransform ct( layer->crs(), crs, transformContext );
     ct.setBallparkTransformsAreAppropriate( true );
     try
