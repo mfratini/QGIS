@@ -1977,6 +1977,49 @@ void QgsMapCanvas::zoomToLayers( const QList<QgsMapLayer *> &layers )
   QgsRectangle extent;
   extent.setNull();
 
+  const auto transformGeocentricExtentForVectorLayer = [this]( QgsVectorLayer *layer )
+  {
+    QgsBox3D extent3D = layer->sourceExtent3D();
+    if ( extent3D.isNull() )
+      extent3D = layer->extent3D();
+
+    if ( extent3D.isNull() )
+      return QgsRectangle();
+
+    double zMin = extent3D.zMinimum();
+    double zMax = extent3D.zMaximum();
+    if ( !std::isfinite( zMin ) || !std::isfinite( zMax ) )
+    {
+      zMin = 0;
+      zMax = 0;
+    }
+
+    QgsRectangle transformedExtent;
+    transformedExtent.setNull();
+
+    const auto addPoint = [this, layer, &transformedExtent]( const double x, const double y, const double z )
+    {
+      const QgsPoint transformedPoint = mapSettings().layerToMapCoordinates( layer, QgsPoint( x, y, z ) );
+      if ( std::isfinite( transformedPoint.x() ) && std::isfinite( transformedPoint.y() ) )
+        transformedExtent.combineExtentWith( transformedPoint.x(), transformedPoint.y() );
+    };
+
+    for ( double x : { extent3D.xMinimum(), extent3D.xMaximum() } )
+    {
+      for ( double y : { extent3D.yMinimum(), extent3D.yMaximum() } )
+      {
+        addPoint( x, y, zMin );
+        if ( !qgsDoubleNear( zMin, zMax ) )
+          addPoint( x, y, zMax );
+      }
+    }
+
+    const double centerZ = ( zMin + zMax ) * 0.5;
+    addPoint( extent3D.center().x(), extent3D.center().y(), centerZ );
+
+    return transformedExtent;
+  };
+
   for ( QgsMapLayer *mapLayer : layers )
   {
     QgsRectangle layerExtent = mapLayer->extent();
@@ -1997,8 +2040,25 @@ void QgsMapCanvas::zoomToLayers( const QList<QgsMapLayer *> &layers )
     if ( layerExtent.isNull() )
       continue;
 
-    //transform extent
-    layerExtent = mapSettings().layerExtentToOutputExtent( mapLayer, layerExtent );
+    bool transformed = false;
+    if ( vLayer && mapLayer->crs().type() == Qgis::CrsType::Geocentric )
+    {
+      const QgsRectangle geocentricLayerExtent = transformGeocentricExtentForVectorLayer( vLayer );
+      if ( !geocentricLayerExtent.isNull() )
+      {
+        layerExtent = geocentricLayerExtent;
+        transformed = true;
+      }
+    }
+
+    if ( !transformed )
+    {
+      // transform extent
+      layerExtent = mapSettings().layerExtentToOutputExtent( mapLayer, layerExtent );
+    }
+
+    if ( !QgsMapSettingsUtils::isValidExtent( layerExtent ) )
+      continue;
 
     extent.combineExtentWith( layerExtent );
   }

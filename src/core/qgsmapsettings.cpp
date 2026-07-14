@@ -31,9 +31,52 @@
 #include "qgsunittypes.h"
 #include "qgsxmlutils.h"
 
+#include <cmath>
 #include <QString>
 
 using namespace Qt::StringLiterals;
+
+namespace
+{
+  QgsRectangle transformExtentWithGeocentricFallback( const QgsCoordinateTransform &ct, const QgsRectangle &extent, Qgis::TransformDirection direction )
+  {
+    QgsRectangle transformedExtent;
+    transformedExtent.setNull();
+
+    auto transformPoint = [&ct, direction, &transformedExtent]( double x, double y )
+    {
+      double z = 0;
+      try
+      {
+        ct.transformInPlace( x, y, z, direction );
+      }
+      catch ( QgsCsException & )
+      {
+        return false;
+      }
+
+      if ( !std::isfinite( x ) || !std::isfinite( y ) )
+        return false;
+
+      transformedExtent.combineExtentWith( QgsPointXY( x, y ) );
+      return true;
+    };
+
+    bool transformedAnyPoint = false;
+    transformedAnyPoint |= transformPoint( extent.xMinimum(), extent.yMinimum() );
+    transformedAnyPoint |= transformPoint( extent.xMinimum(), extent.yMaximum() );
+    transformedAnyPoint |= transformPoint( extent.xMaximum(), extent.yMinimum() );
+    transformedAnyPoint |= transformPoint( extent.xMaximum(), extent.yMaximum() );
+
+    const QgsPointXY center = extent.center();
+    transformedAnyPoint |= transformPoint( center.x(), center.y() );
+
+    if ( !transformedAnyPoint )
+      transformedExtent.setNull();
+
+    return transformedExtent;
+  }
+}
 
 QgsMapSettings::QgsMapSettings()
   : mDpi( QgsPainting::qtDefaultDpiX() ) // DPI that will be used by default for QImage instances
@@ -561,7 +604,14 @@ QgsRectangle QgsMapSettings::layerExtentToOutputExtent( const QgsMapLayer *layer
       QgsDebugMsgLevel( u"destCRS = %1"_s.arg( ct.destinationCrs().authid() ), 3 );
       QgsDebugMsgLevel( u"extent %1"_s.arg( extent.toString() ), 3 );
       ct.setBallparkTransformsAreAppropriate( true );
-      extent = ct.transformBoundingBox( extent );
+      if ( ct.sourceCrs().type() == Qgis::CrsType::Geocentric || ct.destinationCrs().type() == Qgis::CrsType::Geocentric )
+      {
+        extent = transformExtentWithGeocentricFallback( ct, extent, Qgis::TransformDirection::Forward );
+      }
+      else
+      {
+        extent = ct.transformBoundingBox( extent );
+      }
     }
   }
   catch ( QgsCsException &cse )
@@ -586,7 +636,14 @@ QgsRectangle QgsMapSettings::outputExtentToLayerExtent( const QgsMapLayer *layer
       QgsDebugMsgLevel( u"sourceCrs = %1"_s.arg( ct.sourceCrs().authid() ), 3 );
       QgsDebugMsgLevel( u"destCRS = %1"_s.arg( ct.destinationCrs().authid() ), 3 );
       QgsDebugMsgLevel( u"extent = %1"_s.arg( extent.toString() ), 3 );
-      extent = ct.transformBoundingBox( extent, Qgis::TransformDirection::Reverse );
+      if ( ct.sourceCrs().type() == Qgis::CrsType::Geocentric || ct.destinationCrs().type() == Qgis::CrsType::Geocentric )
+      {
+        extent = transformExtentWithGeocentricFallback( ct, extent, Qgis::TransformDirection::Reverse );
+      }
+      else
+      {
+        extent = ct.transformBoundingBox( extent, Qgis::TransformDirection::Reverse );
+      }
     }
   }
   catch ( QgsCsException &cse )
