@@ -143,6 +143,12 @@ QList<QgsMapToolIdentify::IdentifyResult> QgsMapToolIdentify::identify(
 
   if ( mode == LayerSelection )
   {
+    // Layer selection relies on a click position for popup placement.
+    // For non-point identify geometries (rectangle/polygon/freehand/radius),
+    // fall back to standard top-down identify so results are still returned.
+    if ( geometry.type() != Qgis::GeometryType::Point )
+      return identify( geometry, TopDownAll, layerList, layerType, identifyContext );
+
     QPoint canvasPt = toCanvasCoordinates( geometry.asPoint() );
     int x = canvasPt.x(), y = canvasPt.y();
     QList<IdentifyResult> results = identify( x, y, TopDownAll, layerList, layerType, identifyContext );
