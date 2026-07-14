@@ -288,7 +288,7 @@ void QgsRubberBand::addGeometry( const QgsGeometry &geometry, QgsMapLayer *layer
     QgsCoordinateTransform ct = mMapCanvas->mapSettings().layerTransform( layer );
     try
     {
-      geom.transform( ct );
+      geom.transform( ct, Qgis::TransformDirection::Forward, true );
     }
     catch ( QgsCsException & )
     {
@@ -317,7 +317,7 @@ void QgsRubberBand::addGeometry( const QgsGeometry &geometry, const QgsCoordinat
     QgsCoordinateTransform ct( crs, ms.destinationCrs(), QgsProject::instance() );
     try
     {
-      geom.transform( ct );
+      geom.transform( ct, Qgis::TransformDirection::Forward, true );
     }
     catch ( QgsCsException & )
     {
