@@ -290,7 +290,7 @@ void QgsMapToolSelectionHandler::selectPolygonPressEvent( QgsMapMouseEvent *e )
       QgsGeometry geom = selectedFeatures[0].mFeature.geometry();
       try
       {
-        geom.transform( transform );
+        geom.transform( transform, Qgis::TransformDirection::Forward, true );
       }
       catch ( QgsCsException & )
       {

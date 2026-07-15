@@ -76,22 +76,50 @@ QList<QgsMapToolIdentify::IdentifyResult> QgsIdentifyMenu::findFeaturesOnCanvas(
       if ( typeIsSelectable )
       {
         QgsRectangle rect( x - sr, y - sr, x + sr, y + sr );
+        const bool geocentricIdentify = vectorLayer->crs().type() == Qgis::CrsType::Geocentric || canvas->mapSettings().destinationCrs().type() == Qgis::CrsType::Geocentric;
+        const QgsGeometry selectionGeom = QgsGeometry::fromRect( rect );
         QgsCoordinateTransform transform = canvas->mapSettings().layerTransform( vectorLayer );
         transform.setBallparkTransformsAreAppropriate( true );
 
-        try
+        QgsFeatureRequest request;
+        if ( !geocentricIdentify )
         {
-          rect = transform.transformBoundingBox( rect, Qgis::TransformDirection::Reverse );
+          try
+          {
+            rect = transform.transformBoundingBox( rect, Qgis::TransformDirection::Reverse );
+            request.setFilterRect( rect );
+            request.setFlags( Qgis::FeatureRequestFlag::ExactIntersect );
+          }
+          catch ( QgsCsException & )
+          {
+            QgsDebugError( u"Could not transform geometry to layer CRS"_s );
+          }
         }
-        catch ( QgsCsException & )
-        {
-          QgsDebugError( u"Could not transform geometry to layer CRS"_s );
-        }
+        request.setNoAttributes();
 
-        QgsFeatureIterator fit = vectorLayer->getFeatures( QgsFeatureRequest().setFilterRect( rect ).setFlags( Qgis::FeatureRequestFlag::ExactIntersect ) );
+        QgsFeatureIterator fit = vectorLayer->getFeatures( request );
         QgsFeature f;
         while ( fit.nextFeature( f ) )
         {
+          if ( geocentricIdentify )
+          {
+            QgsGeometry g = f.geometry();
+            if ( g.isEmpty() )
+              continue;
+
+            try
+            {
+              g.transform( transform, Qgis::TransformDirection::Forward, true );
+            }
+            catch ( QgsCsException & )
+            {
+              continue;
+            }
+
+            if ( !g.intersects( selectionGeom ) )
+              continue;
+          }
+
           results << QgsMapToolIdentify::IdentifyResult( vectorLayer, f, derivedAttributes );
         }
       }
