@@ -551,7 +551,7 @@ void QgsMapToolCapture::cadCanvasPressEvent( QgsMapMouseEvent *e )
   {
     if ( e->button() == Qt::LeftButton )
     {
-      const QgsPoint mapPoint = QgsPoint( e->mapPoint() );
+      const QgsPoint capturedPoint = mapPoint( *e );
 
       // Initialize Bézier structures if needed
       if ( !mBezierData )
@@ -567,7 +567,7 @@ void QgsMapToolCapture::cadCanvasPressEvent( QgsMapMouseEvent *e )
       mBezierMoveAnchorIndex = -1;
 
       // First, check if clicking on an existing handle
-      const int handleIdx = mBezierData->findClosestHandle( mapPoint, tolerance );
+      const int handleIdx = mBezierData->findClosestHandle( capturedPoint, tolerance );
       if ( handleIdx >= 0 )
       {
         // Start dragging this handle independently
@@ -578,7 +578,7 @@ void QgsMapToolCapture::cadCanvasPressEvent( QgsMapMouseEvent *e )
       }
 
       // Second, check if clicking on an existing anchor
-      const int anchorIdx = mBezierData->findClosestAnchor( mapPoint, tolerance );
+      const int anchorIdx = mBezierData->findClosestAnchor( capturedPoint, tolerance );
       if ( anchorIdx >= 0 )
       {
         if ( e->modifiers() & Qt::AltModifier )
@@ -599,7 +599,7 @@ void QgsMapToolCapture::cadCanvasPressEvent( QgsMapMouseEvent *e )
       }
 
       // Otherwise, add new anchor and start symmetric handle drag
-      mBezierData->addAnchor( mapPoint );
+      mBezierData->addAnchor( capturedPoint );
       mBezierDragAnchorIndex = mBezierData->anchorCount() - 1;
       mBezierDragging = true;
 
@@ -649,7 +649,7 @@ void QgsMapToolCapture::cadCanvasMoveEvent( QgsMapMouseEvent *e )
   else if ( mCurrentCaptureTechnique == Qgis::CaptureTechnique::PolyBezier )
   {
     // Poly-Bézier mode handling
-    const QgsPoint mapPoint = QgsPoint( point );
+    const QgsPoint capturedPoint = mapPoint( *e );
 
     // Check if we are hovering over a handle or anchor to change cursor
     if ( mBezierData )
@@ -657,9 +657,9 @@ void QgsMapToolCapture::cadCanvasMoveEvent( QgsMapMouseEvent *e )
       const double tolerance = searchRadiusMU( mCanvas );
 
       // Check if mouse is near any handle
-      const int handleIdx = mBezierData->findClosestHandle( mapPoint, tolerance );
+      const int handleIdx = mBezierData->findClosestHandle( capturedPoint, tolerance );
       // Check if mouse is near any anchor
-      const int anchorIdx = mBezierData->findClosestAnchor( mapPoint, tolerance );
+      const int anchorIdx = mBezierData->findClosestAnchor( capturedPoint, tolerance );
 
       if ( handleIdx >= 0 || anchorIdx >= 0 )
       {
@@ -678,12 +678,12 @@ void QgsMapToolCapture::cadCanvasMoveEvent( QgsMapMouseEvent *e )
       if ( mBezierDragHandleIndex >= 0 )
       {
         // Dragging an existing handle independently
-        mBezierData->moveHandle( mBezierDragHandleIndex, mapPoint );
+        mBezierData->moveHandle( mBezierDragHandleIndex, capturedPoint );
       }
       else if ( mBezierDragAnchorIndex >= 0 )
       {
         // Creating new anchor: update both handles symmetrically
-        mBezierData->calculateSymmetricHandles( mBezierDragAnchorIndex, mapPoint );
+        mBezierData->calculateSymmetricHandles( mBezierDragAnchorIndex, capturedPoint );
       }
 
       // Update visualization
@@ -694,7 +694,7 @@ void QgsMapToolCapture::cadCanvasMoveEvent( QgsMapMouseEvent *e )
     else if ( mBezierData && mBezierData->anchorCount() > 0 && mBezierMarker && mCapturing )
     {
       QgsBezierData previewData = *mBezierData;
-      previewData.addAnchor( mapPoint );
+      previewData.addAnchor( capturedPoint );
 
       mBezierMarker->updateCurve( previewData );
 
@@ -741,7 +741,7 @@ void QgsMapToolCapture::cadCanvasMoveEvent( QgsMapMouseEvent *e )
   }
   else
   {
-    const QgsPoint mapPoint = QgsPoint( point );
+    const QgsPoint mapPoint = this->mapPoint( *e );
 
     QgsCoordinateReferenceSystem targetCrs = mCanvas->mapSettings().destinationCrs();
     if ( QgsMapLayer *l = layer() )
@@ -861,11 +861,27 @@ int QgsMapToolCapture::nextPoint( const QgsPoint &mapPoint, QgsPoint &layerPoint
   {
     try
     {
-      QgsPointXY mapP( mapPoint.x(), mapPoint.y() ); //#spellok
-      const bool is3D = layerPoint.is3D();
-      const bool isMeasure = layerPoint.isMeasure();
-      mapP = toLayerCoordinates( vlayer, mapP );                                                         //transform snapped point back to layer crs  //#spellok
-      layerPoint = QgsPoint( layerPoint.wkbType(), mapP.x(), mapP.y(), layerPoint.z(), layerPoint.m() ); //#spellok
+      const QgsCoordinateTransform ct = mCanvas->mapSettings().layerTransform( vlayer );
+      QgsPoint transformedPoint( mapPoint );
+
+      if ( ct.isValid() && !ct.isShortCircuited() )
+      {
+        const bool useZAwareTransform = ct.hasVerticalComponent()
+                                        || ct.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                        || ct.destinationCrs().type() == Qgis::CrsType::Geocentric;
+        transformedPoint.transform( ct, Qgis::TransformDirection::Reverse, useZAwareTransform );
+      }
+      else
+      {
+        QgsPointXY mapP( mapPoint.x(), mapPoint.y() ); //#spellok
+        mapP = toLayerCoordinates( vlayer, mapP ); // transform snapped point back to layer crs  //#spellok
+        transformedPoint.setX( mapP.x() );
+        transformedPoint.setY( mapP.y() );
+      }
+
+      const bool is3D = layerPoint.is3D() || transformedPoint.is3D();
+      const bool isMeasure = layerPoint.isMeasure() || transformedPoint.isMeasure();
+      layerPoint = transformedPoint;
       if ( QgsWkbTypes::hasZ( vlayer->wkbType() ) && !is3D )
         layerPoint.addZValue( mCadDockWidget && mCadDockWidget->cadEnabled() ? mCadDockWidget->currentPointV2().z() : defaultZValue() );
       if ( QgsWkbTypes::hasM( vlayer->wkbType() ) && !isMeasure )
@@ -957,10 +973,20 @@ int QgsMapToolCapture::fetchLayerPoint( const QgsPointLocator::Match &match, Qgs
 
 int QgsMapToolCapture::addVertex( const QgsPointXY &point )
 {
-  return addVertex( point, QgsPointLocator::Match() );
+  return addVertex( QgsPoint( point ), QgsPointLocator::Match() );
 }
 
 int QgsMapToolCapture::addVertex( const QgsPointXY &point, const QgsPointLocator::Match &match )
+{
+  return addVertex( QgsPoint( point ), match );
+}
+
+int QgsMapToolCapture::addVertex( const QgsPoint &point )
+{
+  return addVertex( point, QgsPointLocator::Match() );
+}
+
+int QgsMapToolCapture::addVertex( const QgsPoint &point, const QgsPointLocator::Match &match )
 {
   if ( mode() == CaptureNone )
   {
@@ -977,7 +1003,7 @@ int QgsMapToolCapture::addVertex( const QgsPointXY &point, const QgsPointLocator
     int res = fetchLayerPoint( match, layerPoint );
     if ( res != 0 )
     {
-      res = nextPoint( QgsPoint( point ), layerPoint );
+      res = nextPoint( point, layerPoint );
       if ( res != 0 )
       {
         return res;
@@ -986,7 +1012,7 @@ int QgsMapToolCapture::addVertex( const QgsPointXY &point, const QgsPointLocator
   }
   else
   {
-    layerPoint = QgsPoint( point );
+    layerPoint = point;
   }
   const QgsPoint mapPoint = toMapCoordinates( layer(), layerPoint );
 
@@ -1106,7 +1132,10 @@ int QgsMapToolCapture::addCurve( QgsCurve *c )
   if ( ct.isValid() && !ct.isShortCircuited() )
   {
     QgsLineString *segmented = c->curveToLine();
-    segmented->transform( ct, Qgis::TransformDirection::Reverse );
+    const bool useZAwareTransform = ct.hasVerticalComponent()
+                                    || ct.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                    || ct.destinationCrs().type() == Qgis::CrsType::Geocentric;
+    segmented->transform( ct, Qgis::TransformDirection::Reverse, useZAwareTransform );
     // Curve geometries will be converted to segments, so we explicitly set extentPrevious to false
     // to be able to remove the whole curve in undo
     mCaptureCurve.addCurve( segmented, false );
@@ -1777,37 +1806,38 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
       return;
 
     QgsPoint savePoint; //point in layer coordinates
-    bool isMatchPointZ = false;
-    bool isMatchPointM = false;
     try
     {
       QgsPoint fetchPoint;
       int res = fetchLayerPoint( e->mapPointMatch(), fetchPoint );
-      isMatchPointZ = QgsWkbTypes::hasZ( fetchPoint.wkbType() );
-      isMatchPointM = QgsWkbTypes::hasM( fetchPoint.wkbType() );
 
       if ( res == 0 )
       {
-        Qgis::WkbType geomType = Qgis::WkbType::Point;
-        if ( isMatchPointM && isMatchPointZ )
-        {
-          geomType = Qgis::WkbType::PointZM;
-        }
-        else if ( isMatchPointM )
-        {
-          geomType = Qgis::WkbType::PointM;
-        }
-        else if ( isMatchPointZ )
-        {
-          geomType = Qgis::WkbType::PointZ;
-        }
-        savePoint = QgsPoint( geomType, fetchPoint.x(), fetchPoint.y(), fetchPoint.z(), fetchPoint.m() );
+        savePoint = fetchPoint;
       }
       else
       {
-        QgsPointXY point = mCanvas->mapSettings().mapToLayerCoordinates( layer(), e->mapPoint() );
+        QgsPoint layerPoint;
+        const int transformRes = nextPoint( mapPoint( *e ), layerPoint );
+        if ( transformRes != 0 )
+        {
+          emit messageEmitted( tr( "Cannot transform the point to the layer's coordinate system" ), Qgis::MessageLevel::Warning );
+          return;
+        }
+        savePoint = layerPoint;
+      }
 
-        savePoint = QgsPoint( point.x(), point.y(), fetchPoint.z(), fetchPoint.m() );
+      if ( QgsVectorLayer *vlayer = qobject_cast<QgsVectorLayer *>( layer() ) )
+      {
+        if ( QgsWkbTypes::hasZ( vlayer->wkbType() ) && !savePoint.is3D() )
+          savePoint.addZValue( mCadDockWidget && mCadDockWidget->cadEnabled() ? mCadDockWidget->currentPointV2().z() : defaultZValue() );
+        if ( QgsWkbTypes::hasM( vlayer->wkbType() ) && !savePoint.isMeasure() )
+          savePoint.addMValue( mCadDockWidget && mCadDockWidget->cadEnabled() ? mCadDockWidget->currentPointV2().m() : defaultMValue() );
+
+        if ( !QgsWkbTypes::hasZ( vlayer->wkbType() ) )
+          savePoint.dropZValue();
+        if ( !QgsWkbTypes::hasM( vlayer->wkbType() ) )
+          savePoint.dropMValue();
       }
     }
     catch ( QgsCsException &cse )
@@ -1820,7 +1850,7 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
     QgsGeometry g( std::make_unique<QgsPoint>( savePoint ) );
 
     // The snapping result needs to be added so it's available in the @snapping_results variable of default value etc. expression contexts
-    addVertex( e->mapPoint(), e->mapPointMatch() );
+    addVertex( mapPoint( *e ), e->mapPointMatch() );
 
     geometryCaptured( g );
     pointCaptured( savePoint );
@@ -1873,16 +1903,27 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
           std::unique_ptr<QgsNurbsCurve> nurbsCurve = mBezierData->asNurbsCurve();
           if ( nurbsCurve )
           {
+            bool geocentricCapture = false;
+
             // Transform to layer coordinates if a layer is present
             QgsVectorLayer *vlayer = qobject_cast<QgsVectorLayer *>( layer() );
             if ( vlayer )
             {
+              geocentricCapture = vlayer->crs().type() == Qgis::CrsType::Geocentric
+                                  || mCanvas->mapSettings().destinationCrs().type() == Qgis::CrsType::Geocentric;
+
               const QgsCoordinateTransform ct = mCanvas->mapSettings().layerTransform( vlayer );
               if ( ct.isValid() && !ct.isShortCircuited() )
               {
                 try
                 {
-                  nurbsCurve->transform( ct, Qgis::TransformDirection::Reverse );
+                  const bool useZAwareTransform = ct.hasVerticalComponent()
+                                                  || ct.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                                  || ct.destinationCrs().type() == Qgis::CrsType::Geocentric;
+                  if ( useZAwareTransform )
+                    nurbsCurve->transform( ct, Qgis::TransformDirection::Reverse, true );
+                  else
+                    nurbsCurve->transform( ct, Qgis::TransformDirection::Reverse );
                 }
                 catch ( QgsCsException & )
                 {
@@ -1898,15 +1939,26 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
             // Close for polygon if needed
             if ( mode() == CapturePolygon && !nurbsCurve->isClosed() )
             {
-              // For polygon, wrap in compound curve and add closing segment
-              auto compound = std::make_unique<QgsCompoundCurve>();
-              compound->addCurve( nurbsCurve.release() );
-              // Add closing line segment from end to start
-              auto closingSegment = std::make_unique<QgsLineString>();
-              closingSegment->addVertex( compound->endPoint() );
-              closingSegment->addVertex( compound->startPoint() );
-              compound->addCurve( closingSegment.release() );
-              curveToAdd = std::move( compound );
+              if ( geocentricCapture )
+              {
+                // In geocentric captures, a simple closed linear ring is more robust for downstream coercion/add-feature.
+                std::unique_ptr<QgsLineString> linearRing( nurbsCurve->curveToLine() );
+                if ( linearRing && !linearRing->isClosed() )
+                  linearRing->addVertex( linearRing->startPoint() );
+                curveToAdd = std::move( linearRing );
+              }
+              else
+              {
+                // For polygon, wrap in compound curve and add closing segment
+                auto compound = std::make_unique<QgsCompoundCurve>();
+                compound->addCurve( nurbsCurve.release() );
+                // Add closing line segment from end to start
+                auto closingSegment = std::make_unique<QgsLineString>();
+                closingSegment->addVertex( compound->endPoint() );
+                closingSegment->addVertex( compound->startPoint() );
+                compound->addCurve( closingSegment.release() );
+                curveToAdd = std::move( compound );
+              }
             }
             else
             {
@@ -1928,7 +1980,6 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
               geometryCaptured( g );
               polygonCaptured( poly.get() );
             }
-
             digitizingFinished = true;
           }
         }
@@ -1969,7 +2020,7 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
       //add point to list and to rubber band
       if ( e->button() == Qt::LeftButton )
       {
-        const int error = addVertex( e->mapPoint(), e->mapPointMatch() );
+        const int error = addVertex( mapPoint( *e ), e->mapPointMatch() );
         if ( error == 2 )
         {
           //problem with coordinate transformation
@@ -1992,7 +2043,15 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
             // Exclude the last point (cursor position)
             for ( int i = 0; i < rbPointCount - 1; ++i )
             {
-              nurbsControlPoints.append( mTempRubberBand->pointFromEnd( rbPointCount - 1 - i ) );
+              const QgsPoint controlPointMap = mTempRubberBand->pointFromEnd( rbPointCount - 1 - i );
+              QgsPoint controlPointLayer;
+              if ( nextPoint( controlPointMap, controlPointLayer ) != 0 )
+              {
+                emit messageEmitted( tr( "Cannot transform the NURBS control point to the layer's coordinate system" ), Qgis::MessageLevel::Warning );
+                stopCapturing();
+                return;
+              }
+              nurbsControlPoints.append( controlPointLayer );
             }
             // Also extract weights (in correct order)
             const QVector<double> &rbWeights = mTempRubberBand->weights();
@@ -2010,13 +2069,14 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
 
         if ( mCurrentCaptureTechnique == Qgis::CaptureTechnique::NurbsCurve )
         {
-          // Minimum 4 control points required for degree 3 NURBS
-          if ( mode() == CaptureLine && nurbsControlPoints.count() < 4 )
+          // We can adapt the NURBS degree later, but still need enough unique control points
+          // to form a valid line or polygon.
+          if ( mode() == CaptureLine && nurbsControlPoints.count() < 2 )
           {
             stopCapturing();
             return;
           }
-          if ( mode() == CapturePolygon && nurbsControlPoints.count() < 4 )
+          if ( mode() == CapturePolygon && nurbsControlPoints.count() < 3 )
           {
             stopCapturing();
             return;
@@ -2110,28 +2170,7 @@ void QgsMapToolCapture::cadCanvasReleaseEvent( QgsMapMouseEvent *e )
           curveToAdd = std::make_unique<QgsNurbsCurve>( nurbsControlPoints, degree, knots, weights );
         }
 
-        // Transform to layer coordinates if a layer is present
-        if ( curveToAdd )
-        {
-          QgsVectorLayer *vlayer = qobject_cast<QgsVectorLayer *>( layer() );
-          if ( vlayer )
-          {
-            const QgsCoordinateTransform ct = mCanvas->mapSettings().layerTransform( vlayer );
-            if ( ct.isValid() && !ct.isShortCircuited() )
-            {
-              try
-              {
-                curveToAdd->transform( ct, Qgis::TransformDirection::Reverse );
-              }
-              catch ( QgsCsException & )
-              {
-                emit messageEmitted( tr( "Cannot transform the geometry to layer coordinates" ), Qgis::MessageLevel::Warning );
-                stopCapturing();
-                return;
-              }
-            }
-          }
-        }
+        // NURBS control points are already converted to layer coordinates during extraction.
       }
       else
       {

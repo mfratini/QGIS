@@ -282,11 +282,27 @@ class GUI_EXPORT QgsMapToolCapture : public QgsMapToolAdvancedDigitizing
     int addVertex( const QgsPointXY &point );
 
     /**
+     * Adds a point to the rubber band (in map coordinates) and to the capture list (in layer coordinates)
+     * preserving optional Z/M values from the input point.
+     * \since QGIS 4.0
+     */
+    int addVertex( const QgsPoint &point );
+
+    /**
      * Variant to supply more information in the case of snapping
      * \param mapPoint The vertex to add in map coordinates
      * \param match Data about the snapping match. Can be an invalid match, if point not snapped.
      */
     int addVertex( const QgsPointXY &mapPoint, const QgsPointLocator::Match &match );
+
+    /**
+     * Variant to supply more information in the case of snapping, preserving optional Z/M values
+     * from the input point.
+     * \param mapPoint The vertex to add in map coordinates
+     * \param match Data about the snapping match. Can be an invalid match, if point not snapped.
+     * \since QGIS 4.0
+     */
+    int addVertex( const QgsPoint &mapPoint, const QgsPointLocator::Match &match );
 
     /**
      * Removes the last vertex from mRubberBand and mCaptureList.
