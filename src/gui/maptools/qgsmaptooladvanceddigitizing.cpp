@@ -179,7 +179,10 @@ void QgsMapToolAdvancedDigitizing::calculateGeometryMeasures(
   const QgsCoordinateTransform ct( geometry.crs(), destinationCrs, QgsProject::instance()->transformContext() );
   try
   {
-    g.transform( ct );
+    const bool useZAwareTransform = ct.hasVerticalComponent()
+                                    || ct.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                    || ct.destinationCrs().type() == Qgis::CrsType::Geocentric;
+    g.transform( ct, Qgis::TransformDirection::Forward, useZAwareTransform );
   }
   catch ( QgsCsException &e )
   {
