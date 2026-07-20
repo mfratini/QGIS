@@ -536,7 +536,13 @@ Qgis::VectorExportResult QgsVectorLayerExporter::exportLayer(
         if ( outputFeature.hasGeometry() )
         {
           QgsGeometry g = outputFeature.geometry();
-          g.transform( ct );
+          const bool geometryHasZ = QgsWkbTypes::hasZ( g.wkbType() );
+          const bool geocentricTransform = ct.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                           || ct.destinationCrs().type() == Qgis::CrsType::Geocentric;
+          const bool useZAwareTransform = ct.hasVerticalComponent()
+                                          || ( geometryHasZ && geocentricTransform );
+
+          g.transform( ct, Qgis::TransformDirection::Forward, useZAwareTransform );
           outputFeature.setGeometry( g );
         }
       }

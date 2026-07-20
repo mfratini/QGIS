@@ -19,6 +19,7 @@
 #include "qgsexpressionsorter_p.h"
 #include "qgsfeedback.h"
 #include "qgssimplifymethod.h"
+#include "qgswkbtypes.h"
 
 QgsAbstractFeatureIterator::QgsAbstractFeatureIterator( const QgsFeatureRequest &request )
   : mRequest( request )
@@ -102,7 +103,11 @@ void QgsAbstractFeatureIterator::geometryToDestinationCrs( QgsFeature &feature, 
     try
     {
       QgsGeometry g = feature.geometry();
-      g.transform( transform, Qgis::TransformDirection::Forward, transform.hasVerticalComponent() );
+      const bool geometryHasZ = QgsWkbTypes::hasZ( g.wkbType() );
+      const bool useZAwareTransform = transform.hasVerticalComponent()
+                                      || ( geometryHasZ && ( transform.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                                             || transform.destinationCrs().type() == Qgis::CrsType::Geocentric ) );
+      g.transform( transform, Qgis::TransformDirection::Forward, useZAwareTransform );
       feature.setGeometry( g );
     }
     catch ( QgsCsException & )

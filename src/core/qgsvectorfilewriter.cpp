@@ -3332,7 +3332,12 @@ gdal::ogr_feature_unique_ptr QgsVectorFileWriter::createFeature( const QgsFeatur
         // output dataset requires coordinate transform
         try
         {
-          geom.transform( *mCoordinateTransform );
+          const bool geometryHasZ = QgsWkbTypes::hasZ( geom.wkbType() );
+          const bool geocentricTransform = mCoordinateTransform->sourceCrs().type() == Qgis::CrsType::Geocentric
+                                           || mCoordinateTransform->destinationCrs().type() == Qgis::CrsType::Geocentric;
+          const bool useZAwareTransform = mCoordinateTransform->hasVerticalComponent()
+                                          || ( geometryHasZ && geocentricTransform );
+          geom.transform( *mCoordinateTransform, Qgis::TransformDirection::Forward, useZAwareTransform );
         }
         catch ( QgsCsException & )
         {
@@ -3966,7 +3971,12 @@ QgsVectorFileWriter::WriterError QgsVectorFileWriter::writeAsVectorFormatV2(
         if ( fet.hasGeometry() )
         {
           QgsGeometry g = fet.geometry();
-          g.transform( options.ct );
+          const bool geometryHasZ = QgsWkbTypes::hasZ( g.wkbType() );
+          const bool geocentricTransform = options.ct.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                           || options.ct.destinationCrs().type() == Qgis::CrsType::Geocentric;
+          const bool useZAwareTransform = options.ct.hasVerticalComponent()
+                                          || ( geometryHasZ && geocentricTransform );
+          g.transform( options.ct, Qgis::TransformDirection::Forward, useZAwareTransform );
           fet.setGeometry( g );
         }
       }
@@ -4541,7 +4551,12 @@ QgsVectorFileWriter::WriterError QgsVectorFileWriter::exportFeaturesSymbolLevels
         if ( fet.hasGeometry() )
         {
           QgsGeometry g = fet.geometry();
-          g.transform( ct );
+          const bool geometryHasZ = QgsWkbTypes::hasZ( g.wkbType() );
+          const bool geocentricTransform = ct.sourceCrs().type() == Qgis::CrsType::Geocentric
+                                           || ct.destinationCrs().type() == Qgis::CrsType::Geocentric;
+          const bool useZAwareTransform = ct.hasVerticalComponent()
+                                          || ( geometryHasZ && geocentricTransform );
+          g.transform( ct, Qgis::TransformDirection::Forward, useZAwareTransform );
           fet.setGeometry( g );
         }
       }
